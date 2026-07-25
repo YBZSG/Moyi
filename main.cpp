@@ -28,7 +28,59 @@ bool adapterIsRunning()
     return socket.waitForConnected(120);
 }
 
-// 【赖泽豪负责】随程序自动启动本地外部 AI 适配服务。
+QString findPythonExecutable(bool &usesPythonLauncher)
+{
+    usesPythonLauncher = false;
+
+    const QString configured =
+        qEnvironmentVariable("GOMOKU_PYTHON").trimmed();
+    QStringList candidates;
+    if (!configured.isEmpty()) {
+        candidates << configured;
+    }
+
+    candidates
+        << QStandardPaths::findExecutable(QStringLiteral("pythonw"))
+        << QStandardPaths::findExecutable(QStringLiteral("python"))
+        << QStandardPaths::findExecutable(QStringLiteral("py"));
+
+    const QString applicationDir = QCoreApplication::applicationDirPath();
+    candidates
+        << QDir(applicationDir).filePath(QStringLiteral("pythonw.exe"))
+        << QDir(applicationDir).filePath(QStringLiteral("python.exe"))
+        << QDir(applicationDir).filePath(QStringLiteral("python/pythonw.exe"))
+        << QDir(applicationDir).filePath(QStringLiteral("python/python.exe"));
+
+    // 支持 python.org 的默认安装目录。
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    QDir pythonRoot(QDir(localAppData).filePath(
+        QStringLiteral("Programs/Python")));
+    for (const QString &directory :
+         pythonRoot.entryList({QStringLiteral("Python*")},
+                              QDir::Dirs | QDir::NoDotAndDotDot)) {
+        candidates
+            << QDir(pythonRoot.filePath(directory))
+                   .filePath(QStringLiteral("pythonw.exe"))
+            << QDir(pythonRoot.filePath(directory))
+                   .filePath(QStringLiteral("python.exe"));
+    }
+
+    for (const QString &candidate : candidates) {
+        if (candidate.isEmpty()) {
+            continue;
+        }
+        const QFileInfo executable(candidate);
+        if (executable.exists() && executable.isFile()) {
+            usesPythonLauncher =
+                executable.fileName().compare(QStringLiteral("py.exe"),
+                                              Qt::CaseInsensitive) == 0;
+            return executable.absoluteFilePath();
+        }
+    }
+    return {};
+}
+
+// 随程序自动启动本地外部 AI 适配服务。
 // 已有服务时不会重复启动；发布版和开发版均会查找 EXE 旁的脚本。
 void ensureAiAdapterRunning()
 {
@@ -56,15 +108,8 @@ void ensureAiAdapterRunning()
         return;
     }
 
-    QString python = QStandardPaths::findExecutable(QStringLiteral("pythonw"));
-    if (python.isEmpty()) {
-        python = QStandardPaths::findExecutable(QStringLiteral("python"));
-    }
     bool usesPythonLauncher = false;
-    if (python.isEmpty()) {
-        python = QStandardPaths::findExecutable(QStringLiteral("py"));
-        usesPythonLauncher = !python.isEmpty();
-    }
+    const QString python = findPythonExecutable(usesPythonLauncher);
     if (python.isEmpty()) {
         return;
     }
