@@ -80,6 +80,7 @@ python examples\ai_server.py
 
 | 模型服务 | Qt 中填写的地址 | Token |
 |---|---|---|
+| Python 强搜索 AI | `http://127.0.0.1:8000/v1/move?provider=search&depth=3` | 留空 |
 | 协议演示 | `http://127.0.0.1:8000/v1/move` | 留空 |
 | DeepSeek | `http://127.0.0.1:8000/v1/move?provider=deepseek` | DeepSeek API Key |
 | 通义千问 | `http://127.0.0.1:8000/v1/move?provider=qwen` | DashScope API Key |
@@ -94,6 +95,12 @@ http://127.0.0.1:8000/v1/move?provider=deepseek&model=deepseek-reasoner
 ```
 
 API Key 通过 Qt 的密码输入框传给本机适配器，不会写入项目文件。
+
+`search` 模式使用独立的 Python 棋类搜索算法，不调用云端接口。它采用迭代
+加深、Negamax、Alpha-Beta 剪枝、候选着法排序和威胁棋形估值。`depth` 可设为
+`1`～`5`，默认推荐 `3`；深度越大，通常棋力越强，但思考时间也越长。
+
+不带 `provider` 的地址属于协议演示模式，仅用于验证接口连通性。
 
 ### 自定义 OpenAI 兼容接口
 

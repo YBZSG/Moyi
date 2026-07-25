@@ -621,7 +621,10 @@ void MainWindow::buildUi()
     auto *apiLayout = new QVBoxLayout(m_apiGroup);
     apiLayout->setContentsMargins(12, 15, 12, 11);
     apiLayout->setSpacing(7);
-    m_endpointEdit = new QLineEdit(QStringLiteral("http://127.0.0.1:8000/v1/move"), m_apiGroup);
+    m_endpointEdit = new QLineEdit(
+        QStringLiteral(
+            "http://127.0.0.1:8000/v1/move?provider=search&depth=3"),
+        m_apiGroup);
     m_endpointEdit->setPlaceholderText(QStringLiteral("POST 接口地址"));
     m_endpointEdit->setToolTip(QStringLiteral("gomoku-ai/v1 的 POST 接口地址"));
     m_tokenEdit = new QLineEdit(m_apiGroup);

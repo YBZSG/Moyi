@@ -11,6 +11,7 @@
 - 双机对战支持暂停/继续；悔棋时自动暂停，避免外部模型持续产生调用
 - 双机对战可为黑方、白方分别配置独立的内置/外部 AI、接口地址和 Token
 - 内置策略 AI：优先取胜、封堵对手，并根据活二/活三/活四评分
+- Python 强搜索 AI：迭代加深、Negamax、Alpha-Beta 剪枝与威胁排序
 - 重新开始（`R`）和悔棋（`Z`）；人机模式按完整回合悔棋
 - 最后落子标记、获胜连线、和棋判定
 - 外部 AI 超时、断网、非法落点时自动回退内置 AI
@@ -44,9 +45,9 @@ cmake -S . -B build/release `
 
 ### 使用项目自带的 Python 适配器
 
-此方法可以连接 DeepSeek、通义千问、Moonshot、智谱 GLM、本地 Ollama，以及
-其他兼容 OpenAI Chat Completions 格式的服务。适配器只使用 Python 标准库，
-不需要安装额外依赖。
+此方法既可以运行独立的 Python 强搜索 AI，也可以连接 DeepSeek、通义千问、
+Moonshot、智谱 GLM、本地 Ollama，以及其他兼容 OpenAI Chat Completions
+格式的服务。适配器只使用 Python 标准库，不需要安装额外依赖。
 
 1. 安装 Python 3.9 或更高版本。启动“墨弈”时，程序会自动检查
    `127.0.0.1:8000`，端口未被占用时会自动启动 EXE 同目录下的
@@ -68,6 +69,7 @@ cmake -S . -B build/release `
 
    | 模型服务 | 接口地址 | Token |
    |---|---|---|
+   | Python 强搜索 AI | `http://127.0.0.1:8000/v1/move?provider=search&depth=3` | 留空 |
    | 本地协议演示 | `http://127.0.0.1:8000/v1/move` | 留空 |
    | DeepSeek | `http://127.0.0.1:8000/v1/move?provider=deepseek` | DeepSeek API Key |
    | 通义千问 | `http://127.0.0.1:8000/v1/move?provider=qwen` | DashScope API Key |
@@ -77,6 +79,13 @@ cmake -S . -B build/release `
 
    Token 只通过请求传给本机适配器，不会写入项目文件。双机对战可以分别为
    黑棋和白棋设置不同的地址、模型和 Token。
+
+   `search` 是真正独立于 C++ 内置 AI 的 Python 搜索引擎。`depth` 支持
+   `1`～`5`：数值越大，搜索越深、棋力通常越强，但每步耗时也会增加。
+   推荐默认使用 `depth=3`；性能较好的电脑可以尝试 `depth=4`。
+
+   不带 `provider` 的 `/v1/move` 只是用于检查 HTTP 协议的演示算法，不代表
+   真正的外部 AI 棋力。
 
 4. 开始对局。如果想先检查适配器是否运行正常，可在浏览器打开
    `http://127.0.0.1:8000/health`。

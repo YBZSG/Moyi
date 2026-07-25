@@ -59,7 +59,8 @@ private:
     struct AiSideConfig
     {
         bool external = false;
-        QString endpoint = QStringLiteral("http://127.0.0.1:8000/v1/move");
+        QString endpoint = QStringLiteral(
+            "http://127.0.0.1:8000/v1/move?provider=search&depth=3");
         QString token;
     };
 
