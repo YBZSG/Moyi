@@ -89,6 +89,21 @@ Moonshot、智谱 GLM、本地 Ollama，以及其他兼容 OpenAI Chat Completio
    不带 `provider` 的 `/v1/move` 只是用于检查 HTTP 协议的演示算法，不代表
    真正的外部 AI 棋力。
 
+   DeepSeek 等云端模型支持两种决策方式：
+
+   - 默认 `mode=guarded`：完整棋盘交给模型，同时提供攻防评分与必须封堵约束，
+     稳定性较高。
+   - `mode=raw`：提交完整棋盘、当前执子方、最后落点和全部空位，不提供任何
+     本地评分、排序或强制封堵，完全由云端模型决策。
+
+   纯模型模式示例：
+
+   ```text
+   http://127.0.0.1:8000/v1/move?provider=deepseek&mode=raw
+   ```
+
+   `mode=raw` 更能体现不同大模型自身的棋路，但棋力和稳定性取决于模型本身。
+
 4. 开始对局。如果想先检查适配器是否运行正常，可在浏览器打开
    `http://127.0.0.1:8000/health`。
 

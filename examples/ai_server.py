@@ -482,14 +482,34 @@ def ranked_model_candidate_moves(
     return [(row, col) for _, row, col in scored[:limit]]
 
 
+def raw_model_candidate_moves(
+    board: list[list[int]],
+    size: int,
+) -> list[tuple[int, int]]:
+    """纯模型模式：按行列顺序提供整个棋盘上的所有空位。"""
+    return [
+        (row, col)
+        for row in range(size)
+        for col in range(size)
+        if board[row][col] == 0
+    ]
+
+
 def build_messages(
     payload: dict[str, Any],
     candidate_moves: list[tuple[int, int]] | None = None,
+    decision_mode: str = "guarded",
 ) -> list[dict[str, str]]:
     board, size, current_player = validate_board(payload)
-    candidates = candidate_moves or ranked_model_candidate_moves(
-        board, size, current_player
-    )
+    guarded = decision_mode != "raw"
+    if candidate_moves is not None:
+        candidates = candidate_moves
+    elif guarded:
+        candidates = ranked_model_candidate_moves(
+            board, size, current_player
+        )
+    else:
+        candidates = raw_model_candidate_moves(board, size)
     opponent = 3 - current_player
     own_wins = {
         move
@@ -503,6 +523,11 @@ def build_messages(
     }
     candidate_lines = []
     for index, (row, col) in enumerate(candidates):
+        if not guarded:
+            candidate_lines.append(
+                f"M{index}: row={row}, col={col}"
+            )
+            continue
         attack = _placed_move_score(
             board, size, row, col, current_player
         )
@@ -522,33 +547,61 @@ def build_messages(
             f"进攻分={attack}, 防守分={defense}, 标签={label}"
         )
     candidate_text = "\n".join(candidate_lines)
-    board_text = "\n".join(" ".join(str(cell) for cell in row) for row in board)
+    column_header = "列号    " + " ".join(
+        f"{col:02d}" for col in range(size)
+    )
+    board_rows = [
+        f"行{row:02d}: " + "  ".join(str(cell) for cell in board[row])
+        for row in range(size)
+    ]
+    board_text = "\n".join([column_header, *board_rows])
     color = "黑棋" if current_player == 1 else "白棋"
+    opponent_color = "白棋" if current_player == 1 else "黑棋"
+    role_statement = (
+        f"你在这一手执{color}，你的棋子值只能是 {current_player}；"
+        f"对手执{opponent_color}，对手棋子值是 {opponent}。"
+        f"你必须为{color}选择落点，绝不能站在对手立场决策。"
+    )
     history = payload.get("history", [])
     last_move_text = "无（当前为开局）"
     if isinstance(history, list) and history:
         last_move = history[-1]
         if isinstance(last_move, dict):
+            last_player = last_move.get("player", opponent)
+            last_color = "黑棋" if last_player == 1 else "白棋"
             last_move_text = (
-                f"对手刚刚下在 row={last_move.get('row')}, "
-                f"col={last_move.get('col')}。必须重新评估该落点产生的威胁。"
+                f"{last_color}（值 {last_player}）刚刚下在 "
+                f"row={last_move.get('row')}, col={last_move.get('col')}。"
+                f"现在轮到你执{color}应对，必须重新评估该落点产生的威胁。"
             )
-    system_prompt = (
-        "你是五子棋落子引擎。棋盘值 0=空位、1=黑棋、2=白棋；坐标从 0 开始，"
-        "row 表示从上到下，col 表示从左到右。优先立即取胜，其次阻止对手立即"
-        "取胜；如果候选标签包含“必须防守”，必须阻止对手下一步获胜，不允许"
-        "继续自己的普通进攻；之后再考虑活四、冲四、活三、双重威胁和中心控制。"
-        "防守分表示该位置对对手的潜在价值，不得忽略。候选着法已经过合法性"
-        "检查，你必须只选择一个候选编号。只输出 JSON，禁止解释，禁止自行输出"
-        "或修改 row、col。"
-    )
+    if guarded:
+        system_prompt = (
+            f"{role_statement}你是五子棋落子引擎。棋盘值 0=空位、1=黑棋、"
+            "2=白棋；坐标从 0 "
+            "开始，row 表示从上到下，col 表示从左到右。优先立即取胜，其次"
+            "阻止对手立即取胜；如果候选标签包含“必须防守”，必须阻止对手"
+            "下一步获胜，不允许继续自己的普通进攻；之后再考虑活四、冲四、"
+            "活三、双重威胁和中心控制。防守分表示该位置对对手的潜在价值，"
+            "不得忽略。候选着法已经过合法性检查，你必须只选择一个候选编号。"
+            "只输出 JSON，禁止解释，禁止自行输出或修改 row、col。"
+        )
+    else:
+        system_prompt = (
+            f"{role_statement}你是独立的五子棋 AI。棋盘值 0=空位、1=黑棋、"
+            "2=白棋；坐标从 0 "
+            "开始，row 表示从上到下，col 表示从左到右。请自行分析完整棋盘，"
+            "自行判断进攻、防守、取胜点、威胁和后续变化。适配器没有提供任何"
+            "棋形评分、排序建议或强制战术，最终决策完全由你作出。你必须从所有"
+            "合法空位编号中选择一个。只输出 JSON，禁止解释，禁止自行输出或"
+            "修改 row、col。"
+        )
     user_prompt = (
         f"棋盘大小：{size}x{size}\n"
-        f"当前执子：{color}（值 {current_player}）\n"
-        f"对手棋子值：{opponent}\n"
+        f"本手身份（再次确认）：{role_statement}\n"
         f"对手最后一步：{last_move_text}\n"
+        f"决策模式：{'纯模型决策' if not guarded else '战术约束决策'}\n"
         f"目标：五子连珠，长连也算胜利。\n"
-        f"棋盘：\n{board_text}\n"
+        f"完整棋盘（带行列编号）：\n{board_text}\n"
         "合法候选着法：\n"
         f"{candidate_text}\n"
         '请严格返回：{"moveId":"M编号"}'
@@ -800,17 +853,25 @@ def call_upstream(
     provider: Provider,
     api_key: str,
     model: str,
+    decision_mode: str = "guarded",
 ) -> tuple[int, int, bool]:
     board, size, current_player = validate_board(payload)
-    candidate_moves = ranked_model_candidate_moves(
-        board,
-        size,
-        current_player,
-    )
+    if decision_mode == "raw":
+        candidate_moves = raw_model_candidate_moves(board, size)
+    else:
+        candidate_moves = ranked_model_candidate_moves(
+            board,
+            size,
+            current_player,
+        )
     candidate_ids = ", ".join(
         f"M{index}" for index in range(len(candidate_moves))
     )
-    messages = build_messages(payload, candidate_moves)
+    messages = build_messages(
+        payload,
+        candidate_moves,
+        decision_mode=decision_mode,
+    )
     last_error: InvalidModelMove | None = None
 
     # 大模型偶尔会选中已有棋子。第一次非法时把具体原因反馈给模型，
@@ -847,8 +908,12 @@ def call_upstream(
                 f"{candidate_ids}"
             )
 
-    # 上游已经真实调用，但连续给出非法落点。适配器在本地选择一个合法点，
-    # 避免 Qt 把本局误判为接口永久不可用；下一手仍会继续调用外部模型。
+    # 上游已经真实调用，但连续给出非法落点。纯模型模式如实报告失败；
+    # 战术约束模式才允许从已排序的合法候选中进行本地纠正。
+    if decision_mode == "raw":
+        raise InvalidModelMove(
+            f"纯模型模式连续返回非法落点：{last_error}"
+        )
     if not candidate_moves:
         raise InvalidModelMove("棋盘上没有合法候选点")
     fallback_row, fallback_col = candidate_moves[0]
@@ -913,7 +978,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.2"
+    server_version = "GomokuAIAdapter/2.3"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)
@@ -927,6 +992,7 @@ class GomokuHandler(BaseHTTPRequestHandler):
                 "protocol": "gomoku-ai/v1",
                 "modelMoveFormat": "moveId",
                 "modelTactics": "attack-defense-constrained",
+                "cloudDecisionModes": ["guarded", "raw"],
                 "providers": ["demo", "search", *PROVIDERS.keys(), "custom"],
             },
         )
@@ -940,7 +1006,11 @@ class GomokuHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            provider_name, provider, model = resolve_provider(parse_qs(parsed.query))
+            query = parse_qs(parsed.query)
+            provider_name, provider, model = resolve_provider(query)
+            decision_mode = query.get("mode", ["guarded"])[0].strip().lower()
+            if decision_mode not in ("guarded", "raw"):
+                raise ValueError("mode 只支持 guarded 或 raw")
 
             if provider_name == "demo":
                 row, col = choose_demo_move(payload)
@@ -969,8 +1039,10 @@ class GomokuHandler(BaseHTTPRequestHandler):
                     provider,
                     api_key,
                     model,
+                    decision_mode=decision_mode,
                 )
-                detail = f"{provider_name}/{model}"
+                mode_name = "纯模型" if decision_mode == "raw" else "战术约束"
+                detail = f"{provider_name}/{model}（{mode_name}）"
                 if used_adapter_fallback:
                     detail += "（模型落点非法，适配器已纠正）"
 

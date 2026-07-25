@@ -19,6 +19,7 @@ from examples.ai_server import (  # noqa: E402
     InvalidModelMove,
     GomokuHandler,
     Provider,
+    build_messages,
     call_upstream,
     choose_demo_move,
     choose_search_move,
@@ -26,6 +27,7 @@ from examples.ai_server import (  # noqa: E402
     extract_move,
     legal_candidate_moves,
     ranked_model_candidate_moves,
+    raw_model_candidate_moves,
 )
 
 
@@ -305,6 +307,35 @@ class AiAdapterTests(unittest.TestCase):
         self.assertEqual((row, col), expected_candidates[0])
         self.assertTrue(used_fallback)
 
+    def test_raw_mode_repeated_invalid_move_reports_failure(self) -> None:
+        MockChatHandler.call_count = 0
+        MockChatHandler.response_contents = [
+            '{"moveId":"M999"}',
+            '{"moveId":"M999"}',
+        ]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MockChatHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = Provider(
+                f"http://127.0.0.1:{server.server_port}/chat/completions",
+                "mock-model",
+            )
+            with self.assertRaises(InvalidModelMove):
+                call_upstream(
+                    sample_payload(),
+                    provider,
+                    "key",
+                    "mock-model",
+                    decision_mode="raw",
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(MockChatHandler.call_count, 2)
+
     def test_string_coordinates_and_trailing_comma_are_accepted(self) -> None:
         payload = sample_payload()
         move = extract_move(
@@ -350,6 +381,26 @@ class AiAdapterTests(unittest.TestCase):
             1,
         )
         self.assertEqual(candidates, [(7, 7)])
+
+    def test_raw_mode_submits_every_empty_point_without_scores(self) -> None:
+        payload = sample_payload()
+        candidates = raw_model_candidate_moves(payload["board"], 15)
+        self.assertEqual(len(candidates), 224)
+        self.assertNotIn((7, 7), candidates)
+        messages = build_messages(
+            payload,
+            candidates,
+            decision_mode="raw",
+        )
+        system_prompt = messages[0]["content"]
+        user_prompt = messages[1]["content"]
+        self.assertIn("你在这一手执白棋", system_prompt)
+        self.assertIn("你的棋子值只能是 2", system_prompt)
+        self.assertIn("完整棋盘（带行列编号）", user_prompt)
+        self.assertIn("行07:", user_prompt)
+        self.assertIn("决策模式：纯模型决策", user_prompt)
+        self.assertNotIn("进攻分=", user_prompt)
+        self.assertNotIn("防守分=", user_prompt)
 
 
 if __name__ == "__main__":
