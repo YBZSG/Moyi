@@ -677,6 +677,16 @@ def extract_candidate_move(
             )
         if direct_match:
             direct_move_id = direct_match.group(1)
+        else:
+            # 复杂局面下模型常写成“综合判断，我选择 M12”。
+            # 回答只来自模型输出，不包含提示词，因此取最后一个编号即可。
+            mentioned_ids = re.findall(
+                r"(?<![A-Za-z0-9])M\s*[-#:]?\s*(\d+)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if mentioned_ids:
+                direct_move_id = mentioned_ids[-1]
 
     if isinstance(data, dict):
         if isinstance(data.get("move"), dict):
@@ -710,7 +720,14 @@ def extract_candidate_move(
         return row, col
 
     # 兼容仍然返回 {"row":...,"col":...} 的模型与自定义服务。
-    return extract_move(content, board, size)
+    try:
+        return extract_move(content, board, size)
+    except InvalidModelMove as error:
+        preview = re.sub(r"\s+", " ", str(content)).strip()
+        preview = preview[:120] if preview else "<空响应>"
+        raise InvalidModelMove(
+            f"未识别到合法 moveId；模型原始输出：{preview}"
+        ) from error
 
 
 def extract_move(content: Any, board: list[list[int]], size: int) -> tuple[int, int]:
@@ -880,8 +897,30 @@ def request_chat_content(
 
     try:
         if provider.protocol == "ollama":
-            return response_data["message"]["content"]
-        return response_data["choices"][0]["message"]["content"]
+            message = response_data["message"]
+            finish_reason = response_data.get("done_reason", "")
+        else:
+            choice = response_data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason", "")
+
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(item.get("text", "")) if isinstance(item, dict)
+                else str(item)
+                for item in content
+            )
+        if content not in (None, ""):
+            return content
+
+        # 一些推理模型把全部文本放在 reasoning_content，content 为空。
+        reasoning_content = message.get("reasoning_content")
+        if reasoning_content not in (None, ""):
+            return reasoning_content
+        raise UpstreamError(
+            f"上游 AI 返回空内容（finish_reason={finish_reason or '未知'}）"
+        )
     except (KeyError, IndexError, TypeError) as error:
         raise UpstreamError("上游 AI 响应中缺少 message.content") from error
 
@@ -1016,7 +1055,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.4"
+    server_version = "GomokuAIAdapter/2.5"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)

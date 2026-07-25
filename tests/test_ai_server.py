@@ -47,6 +47,7 @@ class MockChatHandler(BaseHTTPRequestHandler):
     received_authorization = ""
     received_payload: dict = {}
     response_contents = ['{"row": 7, "col": 8}']
+    response_message_override: dict | None = None
     call_count = 0
 
     def do_POST(self) -> None:  # noqa: N802
@@ -59,16 +60,11 @@ class MockChatHandler(BaseHTTPRequestHandler):
         )
         content = type(self).response_contents[response_index]
         type(self).call_count += 1
+        message = type(self).response_message_override or {
+            "content": f"```json\n{content}\n```"
+        }
         body = json.dumps(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": f"```json\n{content}\n```"
-                        }
-                    }
-                ]
-            }
+            {"choices": [{"message": message, "finish_reason": "stop"}]}
         ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -198,6 +194,18 @@ class AiAdapterTests(unittest.TestCase):
             ),
             (7, 8),
         )
+        self.assertEqual(
+            extract_candidate_move(
+                (
+                    "我先比较进攻和防守。M1 有一定进攻价值，"
+                    f"但综合判断最终选择 M{target_index}。"
+                ),
+                candidates,
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
 
     def test_candidate_move_id_out_of_range_is_rejected(self) -> None:
         payload = sample_payload()
@@ -295,6 +303,42 @@ class AiAdapterTests(unittest.TestCase):
             "落点非法",
             MockChatHandler.received_payload["messages"][-1]["content"],
         )
+
+    def test_reasoning_content_with_natural_move_id_is_accepted(self) -> None:
+        payload = sample_payload()
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            2,
+        )
+        MockChatHandler.call_count = 0
+        MockChatHandler.response_message_override = {
+            "content": "",
+            "reasoning_content": "分析完成，最终我选择 M0。",
+        }
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MockChatHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = Provider(
+                f"http://127.0.0.1:{server.server_port}/chat/completions",
+                "mock-reasoning-model",
+            )
+            row, col, correction_reason = call_upstream(
+                payload,
+                provider,
+                "key",
+                "mock-reasoning-model",
+            )
+        finally:
+            MockChatHandler.response_message_override = None
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual((row, col), candidates[0])
+        self.assertEqual(correction_reason, "")
+        self.assertEqual(MockChatHandler.call_count, 1)
 
     def test_repeated_invalid_moves_use_legal_adapter_fallback(self) -> None:
         MockChatHandler.call_count = 0
