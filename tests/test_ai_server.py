@@ -176,6 +176,28 @@ class AiAdapterTests(unittest.TestCase):
             ),
             (7, 8),
         )
+        self.assertEqual(
+            extract_candidate_move(
+                (
+                    "<think>我先分析双方威胁。</think>\n"
+                    "最终选择如下：\n"
+                    f"```json\n{{\"moveId\":\"M{target_index}\"}}\n```"
+                ),
+                candidates,
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
+        self.assertEqual(
+            extract_candidate_move(
+                f"我的选择是 moveId=M{target_index}",
+                candidates,
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
 
     def test_candidate_move_id_out_of_range_is_rejected(self) -> None:
         payload = sample_payload()

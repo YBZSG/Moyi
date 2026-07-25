@@ -623,6 +623,12 @@ def extract_candidate_move(
     text = ""
     if not isinstance(data, dict):
         text = str(content).strip()
+        text = re.sub(
+            r"<think>.*?</think>",
+            "",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
             text = re.sub(r"\s*```$", "", text)
@@ -631,14 +637,44 @@ def extract_candidate_move(
             data = json.loads(text)
         except json.JSONDecodeError:
             data = None
+            # 推理模型常在 JSON 前后附带说明。优先提取最后一个包含
+            # moveId 的 JSON 对象，而不是把整段文字判为非法。
+            for object_match in reversed(
+                re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL)
+            ):
+                try:
+                    parsed_object = json.loads(
+                        re.sub(r",\s*([}\]])", r"\1", object_match)
+                    )
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_object, dict) and any(
+                    key in parsed_object
+                    for key in (
+                        "moveId",
+                        "move_id",
+                        "candidateId",
+                        "candidate",
+                        "move",
+                    )
+                ):
+                    data = parsed_object
+                    break
 
     direct_move_id: Any = None
     if data is None:
-        direct_match = re.fullmatch(
-            r"[\"']?M?(\d+)[\"']?",
+        direct_match = re.search(
+            r"(?:moveId|move_id|candidateId|candidate|move)"
+            r"\s*[:=]\s*[\"']?M?(\d+)",
             text,
             flags=re.IGNORECASE,
         )
+        if not direct_match:
+            direct_match = re.fullmatch(
+                r"[\"']?M?(\d+)[\"']?",
+                text,
+                flags=re.IGNORECASE,
+            )
         if direct_match:
             direct_move_id = direct_match.group(1)
 
@@ -759,7 +795,9 @@ def request_chat_content(
             "model": model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 80,
+            # 推理模型可能先生成 reasoning_content；过小会在最终 JSON
+            # 之前截断，表现为连续“落点非法”。
+            "max_tokens": 512,
             "stream": False,
             "response_format": {"type": "json_object"},
         }
@@ -854,7 +892,7 @@ def call_upstream(
     api_key: str,
     model: str,
     decision_mode: str = "guarded",
-) -> tuple[int, int, bool]:
+) -> tuple[int, int, str]:
     board, size, current_player = validate_board(payload)
     if decision_mode == "raw":
         candidate_moves = raw_model_candidate_moves(board, size)
@@ -885,7 +923,7 @@ def call_upstream(
                 board,
                 size,
             )
-            return row, col, False
+            return row, col, ""
         except InvalidModelMove as error:
             last_error = error
             if attempt == 1:
@@ -917,7 +955,7 @@ def call_upstream(
     if not candidate_moves:
         raise InvalidModelMove("棋盘上没有合法候选点")
     fallback_row, fallback_col = candidate_moves[0]
-    return fallback_row, fallback_col, True
+    return fallback_row, fallback_col, str(last_error or "未知格式错误")
 
 
 def resolve_provider(
@@ -978,7 +1016,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.3"
+    server_version = "GomokuAIAdapter/2.4"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)
@@ -1034,7 +1072,7 @@ class GomokuHandler(BaseHTTPRequestHandler):
                         {"error": f"{provider_name} 模式缺少 API Key"},
                     )
                     return
-                row, col, used_adapter_fallback = call_upstream(
+                row, col, adapter_correction_reason = call_upstream(
                     payload,
                     provider,
                     api_key,
@@ -1043,8 +1081,11 @@ class GomokuHandler(BaseHTTPRequestHandler):
                 )
                 mode_name = "纯模型" if decision_mode == "raw" else "战术约束"
                 detail = f"{provider_name}/{model}（{mode_name}）"
-                if used_adapter_fallback:
-                    detail += "（模型落点非法，适配器已纠正）"
+                if adapter_correction_reason:
+                    detail += (
+                        "（模型落点非法："
+                        f"{adapter_correction_reason}；适配器已纠正）"
+                    )
 
             self._send_json(
                 200,
