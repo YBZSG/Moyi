@@ -70,7 +70,12 @@ QString findPythonExecutable(bool &usesPythonLauncher)
             continue;
         }
         const QFileInfo executable(candidate);
-        if (executable.exists() && executable.isFile()) {
+        const QString normalizedPath =
+            QDir::fromNativeSeparators(executable.absoluteFilePath());
+        const bool isWindowsStoreAlias =
+            normalizedPath.contains(QStringLiteral("/Microsoft/WindowsApps/"),
+                                    Qt::CaseInsensitive);
+        if (executable.exists() && executable.isFile() && !isWindowsStoreAlias) {
             usesPythonLauncher =
                 executable.fileName().compare(QStringLiteral("py.exe"),
                                               Qt::CaseInsensitive) == 0;
