@@ -1,5 +1,5 @@
 /*
- * 【赖泽豪负责】外部 AI HTTP 接口测试
+ * 外部 AI HTTP 接口测试
  * 测试范围：请求数据、Authorization、响应解析、错误处理和回调结果。
  */
 #include "httpaiprovider.h"

@@ -1,6 +1,5 @@
 /*
  * 墨弈项目总体设计
- * 负责人：赖泽豪
  * 主要内容：应用程序启动、全局样式、窗口图标及各功能模块的总体组织。
  * 相关 Qt 组件：QApplication、QMainWindow、QIcon、QFont、QStyleFactory。
  */

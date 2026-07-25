@@ -1,4 +1,4 @@
-# 【赖泽豪负责】外部 AI 适配器自动测试
+# 外部 AI 适配器自动测试
 # 测试范围：合法候选点、Alpha-Beta 搜索、坐标解析、网络转发、
 # 非法落点重试和本地兜底。
 from __future__ import annotations

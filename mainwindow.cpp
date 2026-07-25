@@ -1,5 +1,5 @@
 /*
- * 【黎天宇负责】主界面设计与交互实现
+ * 主界面设计与交互实现
  * 文件职责：创建主窗口布局，处理模式切换、按钮操作、AI 参数配置、
  *          状态提示、双机对战调度以及游戏结束弹窗。
  * 主要组件：QMainWindow、QPushButton、QComboBox、QLineEdit、QLabel、
