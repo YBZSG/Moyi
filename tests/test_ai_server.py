@@ -258,6 +258,10 @@ class AiAdapterTests(unittest.TestCase):
             MockChatHandler.received_payload["response_format"],
             {"type": "json_object"},
         )
+        self.assertEqual(
+            MockChatHandler.received_payload["max_tokens"],
+            4096,
+        )
         self.assertIn(
             '"moveId":"M数字"',
             MockChatHandler.received_payload["messages"][1]["content"],

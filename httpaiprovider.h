@@ -38,7 +38,8 @@ private:
     QPointer<QNetworkReply> m_reply;
     QUrl m_endpoint;
     QString m_bearerToken;
-    int m_timeoutMs = 60000;
+    // 云端推理模型可能需要较长时间才能在分析末尾给出最终落点。
+    int m_timeoutMs = 300000;
 };
 
 #endif // HTTPAIPROVIDER_H

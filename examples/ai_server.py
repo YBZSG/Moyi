@@ -33,7 +33,10 @@ from urllib.parse import parse_qs, urlparse
 
 HOST = "127.0.0.1"
 PORT = 8000
-UPSTREAM_TIMEOUT_SECONDS = 25
+# 推理模型可能先生成较长的内部分析，再在结尾给出最终 moveId。
+# 给它足够的时间和输出额度，等完整回答返回后再提取最终落点。
+UPSTREAM_TIMEOUT_SECONDS = 240
+MODEL_MAX_TOKENS = 4096
 
 
 @dataclass(frozen=True)
@@ -819,9 +822,9 @@ def request_chat_content(
             "model": model,
             "messages": messages,
             "temperature": 0.1,
-            # 推理模型可能先生成 reasoning_content；过小会在最终 JSON
-            # 之前截断，表现为连续“落点非法”。
-            "max_tokens": 512,
+            # 推理模型可能先生成 reasoning_content；必须等它生成完最终 JSON，
+            # 否则会在 moveId 出现前被截断并被误判为非法落点。
+            "max_tokens": MODEL_MAX_TOKENS,
             "stream": False,
             "response_format": {"type": "json_object"},
         }
@@ -1060,7 +1063,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.6"
+    server_version = "GomokuAIAdapter/2.7"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)

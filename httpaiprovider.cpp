@@ -82,7 +82,7 @@ void HttpAiProvider::setBearerToken(const QString &token)
 
 void HttpAiProvider::setTimeoutMs(int timeoutMs)
 {
-    m_timeoutMs = qBound(1000, timeoutMs, 60000);
+    m_timeoutMs = qBound(1000, timeoutMs, 300000);
 }
 
 QByteArray HttpAiProvider::buildPayload(const GameSnapshot &snapshot) const
