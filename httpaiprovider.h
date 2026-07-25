@@ -1,6 +1,6 @@
 /*
  * 外部 AI 网络接口模块
- * 负责人：组员一
+ * 负责人：赖泽豪
  * 主要内容：发送棋盘数据、接收外部 AI 落点，并处理超时、错误及临时回退。
  * 相关 Qt 组件：QNetworkAccessManager、QNetworkRequest、QNetworkReply、QUrl、QTimer。
  */

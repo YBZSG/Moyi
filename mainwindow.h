@@ -1,6 +1,6 @@
 /*
  * 主界面与交互模块
- * 负责人：组员二
+ * 负责人：黎天宇
  * 主要内容：界面布局、模式选择、AI 配置、按钮操作、状态显示和结果弹窗。
  * 相关 Qt 组件：QMainWindow、QPushButton、QComboBox、QLineEdit、QLabel、
  *               QCheckBox、QGroupBox、QStackedWidget、QTimer 及布局组件。

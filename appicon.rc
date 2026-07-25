@@ -1,2 +1,2 @@
-// 【组员二负责】Windows 可执行文件图标资源
+// 【黎天宇负责】Windows 可执行文件图标资源
 IDI_APP_ICON ICON DISCARDABLE "assets/gomoku-logo.ico"

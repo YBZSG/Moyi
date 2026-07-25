@@ -1,5 +1,5 @@
 <RCC>
-    <!-- 【组员二负责】主界面图片与 Logo 资源配置 -->
+    <!-- 【黎天宇负责】主界面图片与 Logo 资源配置 -->
     <qresource prefix="/assets">
         <file alias="gomoku-logo.png">assets/gomoku-logo-transparent.png</file>
     </qresource>

@@ -1,5 +1,5 @@
 /*
- * 【组员一负责】外部 AI 网络通信实现
+ * 【赖泽豪负责】外部 AI 网络通信实现
  * 文件职责：将棋盘状态编码为 JSON，通过 HTTP 调用外部 AI，
  *          解析落点结果，并处理超时、网络错误和非法响应。
  * 主要组件：QNetworkAccessManager、QNetworkRequest、QNetworkReply、

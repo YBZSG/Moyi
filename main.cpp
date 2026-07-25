@@ -1,6 +1,6 @@
 /*
  * 墨弈项目总体设计
- * 负责人：组员一
+ * 负责人：赖泽豪
  * 主要内容：应用程序启动、全局样式、窗口图标及各功能模块的总体组织。
  * 相关 Qt 组件：QApplication、QMainWindow、QIcon、QFont、QStyleFactory。
  */
@@ -28,7 +28,7 @@ bool adapterIsRunning()
     return socket.waitForConnected(120);
 }
 
-// 【组员一负责】随程序自动启动本地外部 AI 适配服务。
+// 【赖泽豪负责】随程序自动启动本地外部 AI 适配服务。
 // 已有服务时不会重复启动；发布版和开发版均会查找 EXE 旁的脚本。
 void ensureAiAdapterRunning()
 {
