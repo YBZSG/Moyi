@@ -562,6 +562,12 @@ def build_messages(
         f"对手执{opponent_color}，对手棋子值是 {opponent}。"
         f"你必须为{color}选择落点，绝不能站在对手立场决策。"
     )
+    output_contract = (
+        '最高优先级输出规则：你的整个回答必须且只能是一个 JSON 对象，'
+        '格式为 {"moveId":"M数字"}。不要输出思考过程、局面分析、解释、'
+        'Markdown、row、col 或任何其他文字。即使你需要内部思考，也只能'
+        "在最终回答中给出一个候选编号。"
+    )
     history = payload.get("history", [])
     last_move_text = "无（当前为开局）"
     if isinstance(history, list) and history:
@@ -576,24 +582,24 @@ def build_messages(
             )
     if guarded:
         system_prompt = (
-            f"{role_statement}你是五子棋落子引擎。棋盘值 0=空位、1=黑棋、"
+            f"{output_contract}{role_statement}你是五子棋落子引擎。"
+            "棋盘值 0=空位、1=黑棋、"
             "2=白棋；坐标从 0 "
             "开始，row 表示从上到下，col 表示从左到右。优先立即取胜，其次"
             "阻止对手立即取胜；如果候选标签包含“必须防守”，必须阻止对手"
             "下一步获胜，不允许继续自己的普通进攻；之后再考虑活四、冲四、"
             "活三、双重威胁和中心控制。防守分表示该位置对对手的潜在价值，"
             "不得忽略。候选着法已经过合法性检查，你必须只选择一个候选编号。"
-            "只输出 JSON，禁止解释，禁止自行输出或修改 row、col。"
         )
     else:
         system_prompt = (
-            f"{role_statement}你是独立的五子棋 AI。棋盘值 0=空位、1=黑棋、"
+            f"{output_contract}{role_statement}你是独立的五子棋 AI。"
+            "棋盘值 0=空位、1=黑棋、"
             "2=白棋；坐标从 0 "
             "开始，row 表示从上到下，col 表示从左到右。请自行分析完整棋盘，"
             "自行判断进攻、防守、取胜点、威胁和后续变化。适配器没有提供任何"
             "棋形评分、排序建议或强制战术，最终决策完全由你作出。你必须从所有"
-            "合法空位编号中选择一个。只输出 JSON，禁止解释，禁止自行输出或"
-            "修改 row、col。"
+            "合法空位编号中选择一个。"
         )
     user_prompt = (
         f"棋盘大小：{size}x{size}\n"
@@ -604,7 +610,8 @@ def build_messages(
         f"完整棋盘（带行列编号）：\n{board_text}\n"
         "合法候选着法：\n"
         f"{candidate_text}\n"
-        '请严格返回：{"moveId":"M编号"}'
+        "现在立即选择一个候选编号。不要复述或分析棋盘，不要写选择理由。"
+        '整个回答只能是：{"moveId":"M数字"}'
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -967,23 +974,21 @@ def call_upstream(
             last_error = error
             if attempt == 1:
                 break
-            messages.extend(
-                [
-                    {"role": "assistant", "content": str(content)},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"刚才的落点非法：{error}。请重新检查棋盘，"
-                            "只选择候选列表中的另一个编号，并严格返回："
-                            '{"moveId":"M编号"}'
-                        ),
-                    },
-                ]
-            )
-            messages[-1]["content"] += (
-                "\n允许的编号只有："
-                f"{candidate_ids}"
-            )
+            # 不把上一段冗长分析重新放进上下文，否则部分模型会继续解释。
+            # 第二次请求只保留原局面，并追加最短的格式纠正指令。
+            messages = [
+                messages[0],
+                messages[1],
+                {
+                    "role": "user",
+                    "content": (
+                        f"上一回答无法作为落点使用：{error}。停止分析，"
+                        "不要解释，不要输出坐标。现在只返回一个 JSON 对象："
+                        '{"moveId":"M数字"}。'
+                        f"允许的编号只有：{candidate_ids}"
+                    ),
+                },
+            ]
 
     # 上游已经真实调用，但连续给出非法落点。纯模型模式如实报告失败；
     # 战术约束模式才允许从已排序的合法候选中进行本地纠正。
@@ -1055,7 +1060,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.5"
+    server_version = "GomokuAIAdapter/2.6"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)

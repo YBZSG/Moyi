@@ -259,8 +259,16 @@ class AiAdapterTests(unittest.TestCase):
             {"type": "json_object"},
         )
         self.assertIn(
-            '"moveId":"M编号"',
+            '"moveId":"M数字"',
             MockChatHandler.received_payload["messages"][1]["content"],
+        )
+        self.assertIn(
+            "整个回答必须且只能是一个 JSON 对象",
+            MockChatHandler.received_payload["messages"][0]["content"],
+        )
+        self.assertIn(
+            "不要输出思考过程",
+            MockChatHandler.received_payload["messages"][0]["content"],
         )
         self.assertIn(
             "对手最后一步",
@@ -300,8 +308,15 @@ class AiAdapterTests(unittest.TestCase):
         self.assertFalse(used_fallback)
         self.assertEqual(MockChatHandler.call_count, 2)
         self.assertIn(
-            "落点非法",
+            "停止分析",
             MockChatHandler.received_payload["messages"][-1]["content"],
+        )
+        self.assertNotIn(
+            "assistant",
+            [
+                message["role"]
+                for message in MockChatHandler.received_payload["messages"]
+            ],
         )
 
     def test_reasoning_content_with_natural_move_id_is_accepted(self) -> None:
