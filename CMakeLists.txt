@@ -67,6 +67,14 @@ target_link_libraries(moyi PRIVATE
     Qt${QT_VERSION_MAJOR}::Network
 )
 
+# 将本地 AI 适配器放到可执行文件旁，使开发构建和发布版都能自动启动。
+add_custom_command(TARGET moyi POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/examples/ai_server.py
+            $<TARGET_FILE_DIR:moyi>/ai_server.py
+    COMMENT "Copying local AI adapter next to Moyi"
+)
+
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an
 # explicit, fixed bundle identifier manually though.
@@ -88,6 +96,7 @@ install(TARGETS moyi
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(FILES examples/ai_server.py DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(moyi)

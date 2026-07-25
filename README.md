@@ -48,14 +48,18 @@ cmake -S . -B build/release `
 其他兼容 OpenAI Chat Completions 格式的服务。适配器只使用 Python 标准库，
 不需要安装额外依赖。
 
-1. 安装 Python 3.9 或更高版本，在项目根目录启动适配器：
+1. 安装 Python 3.9 或更高版本。启动“墨弈”时，程序会自动检查
+   `127.0.0.1:8000`，端口未被占用时会自动启动 EXE 同目录下的
+   `ai_server.py`，通常不需要手动操作。
+
+   如果自动启动失败，可在项目根目录手动运行：
 
    ```powershell
    python examples/ai_server.py
    ```
 
    看到 `Gomoku AI adapter: http://127.0.0.1:8000/v1/move` 即表示启动成功。
-   运行游戏期间不要关闭这个终端窗口。
+   手动启动时，运行游戏期间不要关闭这个终端窗口。
 
 2. 打开“墨弈”，选择“人机对战”或“双机对战”，将对应棋手的 AI 类型设为
    “外部 HTTP AI”。
