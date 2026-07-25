@@ -440,38 +440,103 @@ def choose_search_move(
     return best_move[0], best_move[1], max(completed_depth, 1)
 
 
-def build_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+def build_messages(
+    payload: dict[str, Any],
+    candidate_moves: list[tuple[int, int]] | None = None,
+) -> list[dict[str, str]]:
     board, size, current_player = validate_board(payload)
-    candidate_text = json.dumps(
-        legal_candidate_moves(board, size),
-        ensure_ascii=False,
+    candidates = candidate_moves or legal_candidate_moves(board, size)
+    candidate_text = "\n".join(
+        f"M{index}: row={row}, col={col}"
+        for index, (row, col) in enumerate(candidates)
     )
     board_text = "\n".join(" ".join(str(cell) for cell in row) for row in board)
     color = "黑棋" if current_player == 1 else "白棋"
     system_prompt = (
         "你是五子棋落子引擎。棋盘值 0=空位、1=黑棋、2=白棋；坐标从 0 开始，"
-        "row 表示从上到下，col 表示从左到右。请选择一个空位，优先立即取胜，"
-        "其次阻止对手立即取胜，再考虑攻防棋形。只输出 JSON，禁止解释。"
+        "row 表示从上到下，col 表示从左到右。优先立即取胜，其次阻止对手立即"
+        "取胜，再考虑活四、冲四、活三、双重威胁和中心控制。候选着法已经过"
+        "合法性检查，你必须只选择一个候选编号。只输出 JSON，禁止解释，禁止"
+        "自行输出或修改 row、col。"
     )
     user_prompt = (
         f"棋盘大小：{size}x{size}\n"
         f"当前执子：{color}（值 {current_player}）\n"
         f"目标：五子连珠，长连也算胜利。\n"
         f"棋盘：\n{board_text}\n"
-        '请严格返回：{"row":整数,"col":整数}'
-    )
-    system_prompt += (
-        " You MUST copy exactly one coordinate from the legal candidate list. "
-        "Never invent a coordinate outside that list."
-    )
-    user_prompt += (
-        "\nLegal candidate coordinates (choose exactly one):\n"
-        f"{candidate_text}"
+        "合法候选着法：\n"
+        f"{candidate_text}\n"
+        '请严格返回：{"moveId":"M编号"}'
     )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def extract_candidate_move(
+    content: Any,
+    candidates: list[tuple[int, int]],
+    board: list[list[int]],
+    size: int,
+) -> tuple[int, int]:
+    """优先解析候选编号，同时兼容旧模型返回的 row/col。"""
+    data: Any = content
+    text = ""
+    if not isinstance(data, dict):
+        text = str(content).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+
+    direct_move_id: Any = None
+    if data is None:
+        direct_match = re.fullmatch(
+            r"[\"']?M?(\d+)[\"']?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if direct_match:
+            direct_move_id = direct_match.group(1)
+
+    if isinstance(data, dict):
+        if isinstance(data.get("move"), dict):
+            data = data["move"]
+        move_id = data.get(
+            "moveId",
+            data.get(
+                "move_id",
+                data.get(
+                    "candidateId",
+                    data.get("candidate", data.get("move")),
+                ),
+            ),
+        )
+    else:
+        move_id = direct_move_id
+
+    if move_id is not None:
+        match = re.fullmatch(r"M?(\d+)", str(move_id).strip(),
+                             flags=re.IGNORECASE)
+        if not match:
+            raise InvalidModelMove("模型返回的 moveId 格式无效")
+        index = int(match.group(1))
+        if not 0 <= index < len(candidates):
+            raise InvalidModelMove(
+                f"模型返回的 moveId M{index} 不在候选列表中"
+            )
+        row, col = candidates[index]
+        if board[row][col] != 0:
+            raise InvalidModelMove("候选落点在等待期间已被占用")
+        return row, col
+
+    # 兼容仍然返回 {"row":...,"col":...} 的模型与自定义服务。
+    return extract_move(content, board, size)
 
 
 def extract_move(content: Any, board: list[list[int]], size: int) -> tuple[int, int]:
@@ -556,8 +621,9 @@ def request_chat_content(
             "model": model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 300,
+            "max_tokens": 80,
             "stream": False,
+            "response_format": {"type": "json_object"},
         }
 
     headers = {
@@ -597,6 +663,24 @@ def request_chat_content(
             except json.JSONDecodeError:
                 error_message = error_body
             error_message = re.sub(r"\s+", " ", error_message).strip()[:180]
+            unsupported_json_mode = (
+                error.code == 400
+                and "response_format" in request_data
+                and any(
+                    keyword in error_message.lower()
+                    for keyword in (
+                        "response_format",
+                        "json mode",
+                        "json_object",
+                        "unsupported",
+                    )
+                )
+            )
+            if unsupported_json_mode:
+                # 部分自定义 OpenAI 兼容服务不支持 JSON Mode；
+                # 去掉该可选参数后仍使用严格提示词重试。
+                request_data.pop("response_format", None)
+                continue
             if error.code in transient_statuses and request_attempt < 2:
                 time.sleep(0.8 * (request_attempt + 1))
                 continue
@@ -633,11 +717,11 @@ def call_upstream(
     model: str,
 ) -> tuple[int, int, bool]:
     board, size, _ = validate_board(payload)
-    candidate_text = json.dumps(
-        legal_candidate_moves(board, size),
-        ensure_ascii=False,
+    candidate_moves = legal_candidate_moves(board, size)
+    candidate_ids = ", ".join(
+        f"M{index}" for index in range(len(candidate_moves))
     )
-    messages = build_messages(payload)
+    messages = build_messages(payload, candidate_moves)
     last_error: InvalidModelMove | None = None
 
     # 大模型偶尔会选中已有棋子。第一次非法时把具体原因反馈给模型，
@@ -645,7 +729,12 @@ def call_upstream(
     for attempt in range(2):
         content = request_chat_content(messages, provider, api_key, model)
         try:
-            row, col = extract_move(content, board, size)
+            row, col = extract_candidate_move(
+                content,
+                candidate_moves,
+                board,
+                size,
+            )
             return row, col, False
         except InvalidModelMove as error:
             last_error = error
@@ -658,14 +747,15 @@ def call_upstream(
                         "role": "user",
                         "content": (
                             f"刚才的落点非法：{error}。请重新检查棋盘，"
-                            '只返回另一个合法空位：{"row":整数,"col":整数}'
+                            "只选择候选列表中的另一个编号，并严格返回："
+                            '{"moveId":"M编号"}'
                         ),
                     },
                 ]
             )
             messages[-1]["content"] += (
-                "\nYou MUST copy exactly one coordinate from this legal list: "
-                f"{candidate_text}"
+                "\n允许的编号只有："
+                f"{candidate_ids}"
             )
 
     # 上游已经真实调用，但连续给出非法落点。适配器在本地选择一个合法点，
@@ -732,7 +822,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.0"
+    server_version = "GomokuAIAdapter/2.1"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)
@@ -744,6 +834,7 @@ class GomokuHandler(BaseHTTPRequestHandler):
             {
                 "status": "ok",
                 "protocol": "gomoku-ai/v1",
+                "modelMoveFormat": "moveId",
                 "providers": ["demo", "search", *PROVIDERS.keys(), "custom"],
             },
         )

@@ -22,6 +22,7 @@ from examples.ai_server import (  # noqa: E402
     call_upstream,
     choose_demo_move,
     choose_search_move,
+    extract_candidate_move,
     extract_move,
     legal_candidate_moves,
 )
@@ -152,6 +153,38 @@ class AiAdapterTests(unittest.TestCase):
         self.assertEqual(sample_payload()["board"][result["row"]][result["col"]], 0)
         self.assertIn("Alpha-Beta", result["message"])
 
+    def test_candidate_move_id_maps_to_legal_coordinate(self) -> None:
+        payload = sample_payload()
+        candidates = legal_candidate_moves(payload["board"], 15)
+        target_index = candidates.index((7, 8))
+        move = extract_candidate_move(
+            {"moveId": f"M{target_index}"},
+            candidates,
+            payload["board"],
+            15,
+        )
+        self.assertEqual(move, (7, 8))
+        self.assertEqual(
+            extract_candidate_move(
+                f"M{target_index}",
+                candidates,
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
+
+    def test_candidate_move_id_out_of_range_is_rejected(self) -> None:
+        payload = sample_payload()
+        candidates = legal_candidate_moves(payload["board"], 15)
+        with self.assertRaises(InvalidModelMove):
+            extract_candidate_move(
+                {"moveId": "M999"},
+                candidates,
+                payload["board"],
+                15,
+            )
+
     def test_openai_compatible_forwarding(self) -> None:
         MockChatHandler.call_count = 0
         MockChatHandler.response_contents = ['{"row": 7, "col": 8}']
@@ -187,6 +220,14 @@ class AiAdapterTests(unittest.TestCase):
         self.assertEqual(
             MockChatHandler.received_payload["messages"][0]["role"],
             "system",
+        )
+        self.assertEqual(
+            MockChatHandler.received_payload["response_format"],
+            {"type": "json_object"},
+        )
+        self.assertIn(
+            '"moveId":"M编号"',
+            MockChatHandler.received_payload["messages"][1]["content"],
         )
 
     def test_invalid_move_is_retried_with_feedback(self) -> None:
