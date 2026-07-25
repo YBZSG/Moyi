@@ -440,28 +440,113 @@ def choose_search_move(
     return best_move[0], best_move[1], max(completed_depth, 1)
 
 
+def ranked_model_candidate_moves(
+    board: list[list[int]],
+    size: int,
+    current_player: int,
+    limit: int = 48,
+) -> list[tuple[int, int]]:
+    """为聊天模型生成兼顾进攻与防守的候选点。"""
+    candidates = legal_candidate_moves(board, size, limit=225)
+    if not candidates:
+        return []
+
+    winning = [
+        move
+        for move in candidates
+        if _would_win(board, size, move[0], move[1], current_player)
+    ]
+    if winning:
+        return winning
+
+    opponent = 3 - current_player
+    forced_blocks = [
+        move
+        for move in candidates
+        if _would_win(board, size, move[0], move[1], opponent)
+    ]
+    if forced_blocks:
+        return forced_blocks
+
+    center = size // 2
+    scored: list[tuple[int, int, int]] = []
+    for row, col in candidates:
+        attack = _placed_move_score(
+            board, size, row, col, current_player
+        )
+        defense = _placed_move_score(board, size, row, col, opponent)
+        combined = attack + defense * 14 // 10
+        combined -= abs(row - center) + abs(col - center)
+        scored.append((combined, row, col))
+    scored.sort(reverse=True)
+    return [(row, col) for _, row, col in scored[:limit]]
+
+
 def build_messages(
     payload: dict[str, Any],
     candidate_moves: list[tuple[int, int]] | None = None,
 ) -> list[dict[str, str]]:
     board, size, current_player = validate_board(payload)
-    candidates = candidate_moves or legal_candidate_moves(board, size)
-    candidate_text = "\n".join(
-        f"M{index}: row={row}, col={col}"
-        for index, (row, col) in enumerate(candidates)
+    candidates = candidate_moves or ranked_model_candidate_moves(
+        board, size, current_player
     )
+    opponent = 3 - current_player
+    own_wins = {
+        move
+        for move in candidates
+        if _would_win(board, size, move[0], move[1], current_player)
+    }
+    opponent_wins = {
+        move
+        for move in candidates
+        if _would_win(board, size, move[0], move[1], opponent)
+    }
+    candidate_lines = []
+    for index, (row, col) in enumerate(candidates):
+        attack = _placed_move_score(
+            board, size, row, col, current_player
+        )
+        defense = _placed_move_score(board, size, row, col, opponent)
+        if (row, col) in own_wins:
+            label = "立即取胜，必须优先"
+        elif (row, col) in opponent_wins:
+            label = "阻止对手下一手获胜，必须防守"
+        elif defense >= 70_000:
+            label = "高防守威胁"
+        elif attack >= 70_000:
+            label = "高进攻威胁"
+        else:
+            label = "普通候选"
+        candidate_lines.append(
+            f"M{index}: row={row}, col={col}, "
+            f"进攻分={attack}, 防守分={defense}, 标签={label}"
+        )
+    candidate_text = "\n".join(candidate_lines)
     board_text = "\n".join(" ".join(str(cell) for cell in row) for row in board)
     color = "黑棋" if current_player == 1 else "白棋"
+    history = payload.get("history", [])
+    last_move_text = "无（当前为开局）"
+    if isinstance(history, list) and history:
+        last_move = history[-1]
+        if isinstance(last_move, dict):
+            last_move_text = (
+                f"对手刚刚下在 row={last_move.get('row')}, "
+                f"col={last_move.get('col')}。必须重新评估该落点产生的威胁。"
+            )
     system_prompt = (
         "你是五子棋落子引擎。棋盘值 0=空位、1=黑棋、2=白棋；坐标从 0 开始，"
         "row 表示从上到下，col 表示从左到右。优先立即取胜，其次阻止对手立即"
-        "取胜，再考虑活四、冲四、活三、双重威胁和中心控制。候选着法已经过"
-        "合法性检查，你必须只选择一个候选编号。只输出 JSON，禁止解释，禁止"
-        "自行输出或修改 row、col。"
+        "取胜；如果候选标签包含“必须防守”，必须阻止对手下一步获胜，不允许"
+        "继续自己的普通进攻；之后再考虑活四、冲四、活三、双重威胁和中心控制。"
+        "防守分表示该位置对对手的潜在价值，不得忽略。候选着法已经过合法性"
+        "检查，你必须只选择一个候选编号。只输出 JSON，禁止解释，禁止自行输出"
+        "或修改 row、col。"
     )
     user_prompt = (
         f"棋盘大小：{size}x{size}\n"
         f"当前执子：{color}（值 {current_player}）\n"
+        f"对手棋子值：{opponent}\n"
+        f"对手最后一步：{last_move_text}\n"
         f"目标：五子连珠，长连也算胜利。\n"
         f"棋盘：\n{board_text}\n"
         "合法候选着法：\n"
@@ -716,8 +801,12 @@ def call_upstream(
     api_key: str,
     model: str,
 ) -> tuple[int, int, bool]:
-    board, size, _ = validate_board(payload)
-    candidate_moves = legal_candidate_moves(board, size)
+    board, size, current_player = validate_board(payload)
+    candidate_moves = ranked_model_candidate_moves(
+        board,
+        size,
+        current_player,
+    )
     candidate_ids = ", ".join(
         f"M{index}" for index in range(len(candidate_moves))
     )
@@ -760,7 +849,9 @@ def call_upstream(
 
     # 上游已经真实调用，但连续给出非法落点。适配器在本地选择一个合法点，
     # 避免 Qt 把本局误判为接口永久不可用；下一手仍会继续调用外部模型。
-    fallback_row, fallback_col = choose_demo_move(payload)
+    if not candidate_moves:
+        raise InvalidModelMove("棋盘上没有合法候选点")
+    fallback_row, fallback_col = candidate_moves[0]
     return fallback_row, fallback_col, True
 
 
@@ -822,7 +913,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.1"
+    server_version = "GomokuAIAdapter/2.2"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)
@@ -835,6 +926,7 @@ class GomokuHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "protocol": "gomoku-ai/v1",
                 "modelMoveFormat": "moveId",
+                "modelTactics": "attack-defense-constrained",
                 "providers": ["demo", "search", *PROVIDERS.keys(), "custom"],
             },
         )

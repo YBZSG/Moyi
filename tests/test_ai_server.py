@@ -25,6 +25,7 @@ from examples.ai_server import (  # noqa: E402
     extract_candidate_move,
     extract_move,
     legal_candidate_moves,
+    ranked_model_candidate_moves,
 )
 
 
@@ -229,6 +230,14 @@ class AiAdapterTests(unittest.TestCase):
             '"moveId":"M编号"',
             MockChatHandler.received_payload["messages"][1]["content"],
         )
+        self.assertIn(
+            "对手最后一步",
+            MockChatHandler.received_payload["messages"][1]["content"],
+        )
+        self.assertIn(
+            "防守分=",
+            MockChatHandler.received_payload["messages"][1]["content"],
+        )
 
     def test_invalid_move_is_retried_with_feedback(self) -> None:
         MockChatHandler.call_count = 0
@@ -288,7 +297,12 @@ class AiAdapterTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-        self.assertEqual((row, col), (6, 7))
+        expected_candidates = ranked_model_candidate_moves(
+            sample_payload()["board"],
+            15,
+            2,
+        )
+        self.assertEqual((row, col), expected_candidates[0])
         self.assertTrue(used_fallback)
 
     def test_string_coordinates_and_trailing_comma_are_accepted(self) -> None:
@@ -308,6 +322,34 @@ class AiAdapterTests(unittest.TestCase):
                 payload["board"],
                 15,
             )
+
+    def test_model_candidates_only_include_forced_block(self) -> None:
+        payload = sample_payload()
+        payload["board"] = [[0 for _ in range(15)] for _ in range(15)]
+        payload["board"][7][2] = 1
+        for col in range(3, 7):
+            payload["board"][7][col] = 2
+        payload["currentPlayer"] = 1
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            1,
+        )
+        self.assertEqual(candidates, [(7, 7)])
+
+    def test_model_candidates_only_include_immediate_win(self) -> None:
+        payload = sample_payload()
+        payload["board"] = [[0 for _ in range(15)] for _ in range(15)]
+        payload["board"][7][2] = 2
+        for col in range(3, 7):
+            payload["board"][7][col] = 1
+        payload["currentPlayer"] = 1
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            1,
+        )
+        self.assertEqual(candidates, [(7, 7)])
 
 
 if __name__ == "__main__":
