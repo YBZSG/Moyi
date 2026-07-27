@@ -77,6 +77,26 @@ class MockChatHandler(BaseHTTPRequestHandler):
 
 
 class AiAdapterTests(unittest.TestCase):
+    def test_health_reports_current_adapter_version(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), GomokuHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/health",
+                timeout=5,
+            ) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["adapterVersion"], "2.9")
+        self.assertEqual(result["promptMode"], "full-board-json-moveId")
+        self.assertEqual(result["modelMaxTokens"], 4096)
+
     def test_empty_board_candidates_only_contains_center(self) -> None:
         board = [[0 for _ in range(15)] for _ in range(15)]
         self.assertEqual(legal_candidate_moves(board, 15), [(7, 7)])
@@ -263,15 +283,15 @@ class AiAdapterTests(unittest.TestCase):
             4096,
         )
         self.assertIn(
-            '"moveId":"M数字"',
-            MockChatHandler.received_payload["messages"][1]["content"],
-        )
-        self.assertIn(
-            "整个回答必须且只能是一个 JSON 对象",
+            "返回的 JSON 只能包含 moveId 一个字段",
             MockChatHandler.received_payload["messages"][0]["content"],
         )
         self.assertIn(
-            "不要输出思考过程",
+            "逐字复制它的实际 M 编号",
+            MockChatHandler.received_payload["messages"][0]["content"],
+        )
+        self.assertIn(
+            "不要展示思考过程",
             MockChatHandler.received_payload["messages"][0]["content"],
         )
         self.assertIn(
@@ -281,6 +301,13 @@ class AiAdapterTests(unittest.TestCase):
         self.assertIn(
             "防守分=",
             MockChatHandler.received_payload["messages"][1]["content"],
+        )
+        self.assertNotIn(
+            "M数字",
+            json.dumps(
+                MockChatHandler.received_payload["messages"],
+                ensure_ascii=False,
+            ),
         )
 
     def test_invalid_move_is_retried_with_feedback(self) -> None:
@@ -322,6 +349,73 @@ class AiAdapterTests(unittest.TestCase):
                 for message in MockChatHandler.received_payload["messages"]
             ],
         )
+        self.assertIn(
+            '{"moveId":"M0"}',
+            MockChatHandler.received_payload["messages"][-1]["content"],
+        )
+        self.assertNotIn(
+            "M数字",
+            MockChatHandler.received_payload["messages"][-1]["content"],
+        )
+
+    def test_placeholder_move_id_is_corrected_with_real_example(self) -> None:
+        payload = sample_payload()
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            2,
+        )
+        MockChatHandler.call_count = 0
+        MockChatHandler.response_contents = [
+            '{"moveId":"M数字"}',
+            '{"moveId":"M0"}',
+        ]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MockChatHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = Provider(
+                f"http://127.0.0.1:{server.server_port}/chat/completions",
+                "deepseek-v4-flash",
+            )
+            row, col, correction_reason = call_upstream(
+                payload,
+                provider,
+                "key",
+                "deepseek-v4-flash",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual((row, col), candidates[0])
+        self.assertEqual(correction_reason, "")
+        self.assertEqual(MockChatHandler.call_count, 2)
+
+    def test_flash_move_id_variants_are_accepted(self) -> None:
+        payload = sample_payload()
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            2,
+        )
+        for response in (
+            '"M0"',
+            {"selected_move": "M0"},
+            {"result": "M0"},
+            {"output": {"choice": "M 0"}},
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(
+                    extract_candidate_move(
+                        response,
+                        candidates,
+                        payload["board"],
+                        15,
+                    ),
+                    candidates[0],
+                )
 
     def test_reasoning_content_with_natural_move_id_is_accepted(self) -> None:
         payload = sample_payload()
@@ -351,6 +445,40 @@ class AiAdapterTests(unittest.TestCase):
             )
         finally:
             MockChatHandler.response_message_override = None
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual((row, col), candidates[0])
+        self.assertEqual(correction_reason, "")
+        self.assertEqual(MockChatHandler.call_count, 1)
+
+    def test_long_flash_response_keeps_final_move_id(self) -> None:
+        payload = sample_payload()
+        candidates = ranked_model_candidate_moves(
+            payload["board"],
+            15,
+            2,
+        )
+        MockChatHandler.call_count = 0
+        MockChatHandler.response_contents = [
+            ("简短内部判断。" * 80) + '\n{"moveId":"M0"}',
+        ]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MockChatHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = Provider(
+                f"http://127.0.0.1:{server.server_port}/chat/completions",
+                "deepseek-v4-flash",
+            )
+            row, col, correction_reason = call_upstream(
+                payload,
+                provider,
+                "key",
+                "deepseek-v4-flash",
+            )
+        finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
@@ -430,6 +558,53 @@ class AiAdapterTests(unittest.TestCase):
         )
         self.assertEqual(move, (7, 8))
 
+    def test_coordinate_array_and_xy_object_are_accepted(self) -> None:
+        payload = sample_payload()
+        self.assertEqual(
+            extract_move([7, 8], payload["board"], 15),
+            (7, 8),
+        )
+        self.assertEqual(
+            extract_move({"x": 8, "y": 7}, payload["board"], 15),
+            (7, 8),
+        )
+        self.assertEqual(
+            extract_move(
+                {"result": {"column": "8", "row": "7"}},
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
+
+    def test_natural_language_final_coordinate_is_accepted(self) -> None:
+        payload = sample_payload()
+        response = (
+            "先分析已有棋子：(7,7) 已被占用，(6,7) 也需要关注。"
+            "综合攻防后，最终选择落点 (7,8)。"
+        )
+        self.assertEqual(
+            extract_candidate_move(
+                response,
+                ranked_model_candidate_moves(
+                    payload["board"],
+                    15,
+                    2,
+                ),
+                payload["board"],
+                15,
+            ),
+            (7, 8),
+        )
+
+    def test_natural_language_row_column_is_accepted(self) -> None:
+        payload = sample_payload()
+        response = "分析结束。建议本手下在行7，列8。"
+        self.assertEqual(
+            extract_move(response, payload["board"], 15),
+            (7, 8),
+        )
+
     def test_occupied_model_move_is_rejected(self) -> None:
         payload = sample_payload()
         with self.assertRaises(InvalidModelMove):
@@ -479,10 +654,12 @@ class AiAdapterTests(unittest.TestCase):
         )
         system_prompt = messages[0]["content"]
         user_prompt = messages[1]["content"]
-        self.assertIn("你在这一手执白棋", system_prompt)
-        self.assertIn("你的棋子值只能是 2", system_prompt)
-        self.assertIn("完整棋盘（带行列编号）", user_prompt)
-        self.assertIn("行07:", user_prompt)
+        self.assertIn("本手执白棋（值2）", system_prompt)
+        self.assertIn("对手执黑棋（值1）", system_prompt)
+        self.assertIn("完整棋盘（逐行标准 JSON 数组）", user_prompt)
+        self.assertIn("row 07:", user_prompt)
+        self.assertIn("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0]", user_prompt)
+        self.assertIn("board[row][col]", user_prompt)
         self.assertIn("决策模式：纯模型决策", user_prompt)
         self.assertNotIn("进攻分=", user_prompt)
         self.assertNotIn("防守分=", user_prompt)

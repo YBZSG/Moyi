@@ -45,13 +45,15 @@ cmake -S . -B build/release `
 `gomoku-ai/v1` 是本项目定义的棋盘通信协议，不是需要另外下载的 AI 模型。
 程序将完整棋盘发送给外部 HTTP 服务，再读取该服务返回的落子坐标。接口超时、
 断网、返回格式错误或落点非法时，当前一步会自动改用内置 AI。
-对于会先输出较长分析的推理模型，程序最长等待约五分钟；Python 适配器允许
-模型生成最多 4096 个 token，并在完整回答结束后提取最终的 `moveId`。
+程序最长等待约五分钟；Python 适配器会把棋盘按逐行 JSON 数组提交，允许模型
+最多生成 4096 个 token，并在完整回答结束后提取最终的 `moveId` 或自然语言
+落点。为获得更快响应，
+建议使用 Flash、Chat、Turbo 或 Mini 等非推理模型。
 
 ### 使用项目自带的 Python 适配器
 
 此方法既可以运行独立的 Python 强搜索 AI，也可以连接 DeepSeek、通义千问、
-Moonshot、智谱 GLM、本地 Ollama，以及其他兼容 OpenAI Chat Completions
+豆包、Moonshot、智谱 GLM、本地 Ollama，以及其他兼容 OpenAI Chat Completions
 格式的服务。适配器只使用 Python 标准库，不需要安装额外依赖。
 
 1. 安装 Python 3.9 或更高版本。启动“墨弈”时，程序会自动检查
@@ -78,6 +80,7 @@ Moonshot、智谱 GLM、本地 Ollama，以及其他兼容 OpenAI Chat Completio
    | 本地协议演示 | `http://127.0.0.1:8000/v1/move` | 留空 |
    | DeepSeek | `http://127.0.0.1:8000/v1/move?provider=deepseek` | DeepSeek API Key |
    | 通义千问 | `http://127.0.0.1:8000/v1/move?provider=qwen` | DashScope API Key |
+   | 豆包（火山方舟） | `http://127.0.0.1:8000/v1/move?provider=doubao&model=模型ID` | 火山方舟 API Key |
    | Moonshot | `http://127.0.0.1:8000/v1/move?provider=moonshot` | Moonshot API Key |
    | 智谱 GLM | `http://127.0.0.1:8000/v1/move?provider=zhipu` | 智谱 API Key |
    | 本地 Ollama | `http://127.0.0.1:8000/v1/move?provider=ollama&model=qwen3` | 留空 |
@@ -122,6 +125,17 @@ ollama serve
 ```text
 http://127.0.0.1:8000/v1/move?provider=deepseek&model=deepseek-reasoner
 ```
+
+豆包应使用火山方舟控制台显示的模型 ID。比如控制台显示
+`doubao-seed-2-0-mini-260428`，则填写：
+
+```text
+http://127.0.0.1:8000/v1/move?provider=doubao&model=doubao-seed-2-0-mini-260428
+```
+
+游戏中的 Token 填火山方舟 API Key。不要把火山方舟原始的
+`https://ark.cn-beijing.volces.com/api/v3/responses` 地址直接填入游戏；
+游戏需要先调用本机 Python 适配器，由适配器提交棋盘并转换返回落点。
 
 ### 连接自己开发的 AI
 

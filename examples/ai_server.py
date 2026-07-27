@@ -10,6 +10,7 @@ Qt 客户端始终请求本服务；本服务把棋盘转换成聊天模型请�
   http://127.0.0.1:8000/v1/move?provider=search&depth=3
   http://127.0.0.1:8000/v1/move?provider=deepseek
   http://127.0.0.1:8000/v1/move?provider=qwen
+  http://127.0.0.1:8000/v1/move?provider=doubao
   http://127.0.0.1:8000/v1/move?provider=moonshot
   http://127.0.0.1:8000/v1/move?provider=ollama&model=qwen3
 
@@ -33,8 +34,9 @@ from urllib.parse import parse_qs, urlparse
 
 HOST = "127.0.0.1"
 PORT = 8000
-# 推理模型可能先生成较长的内部分析，再在结尾给出最终 moveId。
-# 给它足够的时间和输出额度，等完整回答返回后再提取最终落点。
+ADAPTER_VERSION = "2.9"
+# 部分 Flash 模型会忽略“不要分析”的要求，把最终落点放在长篇回答末尾。
+# 保留足够额度，等待完整回答后再从全文中提取最终 moveId 或自然语言坐标。
 UPSTREAM_TIMEOUT_SECONDS = 240
 MODEL_MAX_TOKENS = 4096
 
@@ -55,6 +57,10 @@ PROVIDERS: dict[str, Provider] = {
     "qwen": Provider(
         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         "qwen-plus",
+    ),
+    "doubao": Provider(
+        "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "doubao-seed-2-0-mini-260428",
     ),
     "moonshot": Provider(
         "https://api.moonshot.cn/v1/chat/completions",
@@ -528,7 +534,7 @@ def build_messages(
     for index, (row, col) in enumerate(candidates):
         if not guarded:
             candidate_lines.append(
-                f"M{index}: row={row}, col={col}"
+                f'M{index}: {{"row":{row},"col":{col}}}'
             )
             continue
         attack = _placed_move_score(
@@ -546,30 +552,29 @@ def build_messages(
         else:
             label = "普通候选"
         candidate_lines.append(
-            f"M{index}: row={row}, col={col}, "
+            f'M{index}: {{"row":{row},"col":{col}}}, '
             f"进攻分={attack}, 防守分={defense}, 标签={label}"
         )
     candidate_text = "\n".join(candidate_lines)
-    column_header = "列号    " + " ".join(
-        f"{col:02d}" for col in range(size)
-    )
     board_rows = [
-        f"行{row:02d}: " + "  ".join(str(cell) for cell in board[row])
+        f"row {row:02d}: "
+        + json.dumps(board[row], ensure_ascii=False, separators=(",", ":"))
         for row in range(size)
     ]
-    board_text = "\n".join([column_header, *board_rows])
+    board_text = "\n".join(board_rows)
+    black_count = sum(cell == 1 for row in board for cell in row)
+    white_count = sum(cell == 2 for row in board for cell in row)
     color = "黑棋" if current_player == 1 else "白棋"
     opponent_color = "白棋" if current_player == 1 else "黑棋"
     role_statement = (
-        f"你在这一手执{color}，你的棋子值只能是 {current_player}；"
-        f"对手执{opponent_color}，对手棋子值是 {opponent}。"
-        f"你必须为{color}选择落点，绝不能站在对手立场决策。"
+        f"本手执{color}（值{current_player}），"
+        f"对手执{opponent_color}（值{opponent}）。"
     )
     output_contract = (
-        '最高优先级输出规则：你的整个回答必须且只能是一个 JSON 对象，'
-        '格式为 {"moveId":"M数字"}。不要输出思考过程、局面分析、解释、'
-        'Markdown、row、col 或任何其他文字。即使你需要内部思考，也只能'
-        "在最终回答中给出一个候选编号。"
+        '快速输出：不要展示思考过程，不要解释，不要复述棋盘。'
+        "只能从候选列表中选择一项，并逐字复制它的实际 M 编号。"
+        "返回的 JSON 只能包含 moveId 一个字段；禁止输出“数字”占位词、"
+        "坐标、Markdown 或任何其他文字。"
     )
     history = payload.get("history", [])
     last_move_text = "无（当前为开局）"
@@ -585,36 +590,29 @@ def build_messages(
             )
     if guarded:
         system_prompt = (
-            f"{output_contract}{role_statement}你是五子棋落子引擎。"
-            "棋盘值 0=空位、1=黑棋、"
-            "2=白棋；坐标从 0 "
-            "开始，row 表示从上到下，col 表示从左到右。优先立即取胜，其次"
-            "阻止对手立即取胜；如果候选标签包含“必须防守”，必须阻止对手"
-            "下一步获胜，不允许继续自己的普通进攻；之后再考虑活四、冲四、"
-            "活三、双重威胁和中心控制。防守分表示该位置对对手的潜在价值，"
-            "不得忽略。候选着法已经过合法性检查，你必须只选择一个候选编号。"
+            f"{output_contract}{role_statement}"
+            "你是五子棋快速落子引擎。优先选择立即取胜；否则必须阻止对手"
+            "下一手取胜；再比较候选的进攻分、防守分和标签。"
         )
     else:
         system_prompt = (
-            f"{output_contract}{role_statement}你是独立的五子棋 AI。"
-            "棋盘值 0=空位、1=黑棋、"
-            "2=白棋；坐标从 0 "
-            "开始，row 表示从上到下，col 表示从左到右。请自行分析完整棋盘，"
-            "自行判断进攻、防守、取胜点、威胁和后续变化。适配器没有提供任何"
-            "棋形评分、排序建议或强制战术，最终决策完全由你作出。你必须从所有"
-            "合法空位编号中选择一个。"
+            f"{output_contract}{role_statement}"
+            "你是独立的五子棋快速落子引擎。根据完整棋盘自行判断进攻与"
+            "防守，并从全部合法空位编号中立即选择一个。"
         )
     user_prompt = (
-        f"棋盘大小：{size}x{size}\n"
-        f"本手身份（再次确认）：{role_statement}\n"
+        f"规则：0=空位，1=黑棋，2=白棋；五子或长连获胜。\n"
+        f"棋盘：{size}x{size}；{role_statement}\n"
+        f"当前统计：黑棋{black_count}枚，白棋{white_count}枚。\n"
+        "坐标定义：board[row][col]；row=0 是最上方，向下增大；"
+        "col=0 是最左方，向右增大。每行数组从 col=0 开始，"
+        f"且必须恰好包含 {size} 个值。\n"
         f"对手最后一步：{last_move_text}\n"
         f"决策模式：{'纯模型决策' if not guarded else '战术约束决策'}\n"
-        f"目标：五子连珠，长连也算胜利。\n"
-        f"完整棋盘（带行列编号）：\n{board_text}\n"
+        f"完整棋盘（逐行标准 JSON 数组）：\n{board_text}\n"
         "合法候选着法：\n"
         f"{candidate_text}\n"
-        "现在立即选择一个候选编号。不要复述或分析棋盘，不要写选择理由。"
-        '整个回答只能是：{"moveId":"M数字"}'
+        "立即返回只含 moveId 的 JSON，值必须逐字复制上方某个实际 M 编号。"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -672,6 +670,13 @@ def extract_candidate_move(
                     break
 
     direct_move_id: Any = None
+    if isinstance(data, (str, int)) and not isinstance(data, bool):
+        # JSON Mode 下部分 Flash 模型会直接返回 "M12" 或 12，
+        # 而不是包在对象中。
+        direct_move_id = data
+    elif isinstance(data, list) and len(data) == 1:
+        direct_move_id = data[0]
+
     if data is None:
         direct_match = re.search(
             r"(?:moveId|move_id|candidateId|candidate|move)"
@@ -699,6 +704,10 @@ def extract_candidate_move(
                 direct_move_id = mentioned_ids[-1]
 
     if isinstance(data, dict):
+        for wrapper_key in ("result", "output", "data", "answer"):
+            if isinstance(data.get(wrapper_key), dict):
+                data = data[wrapper_key]
+                break
         if isinstance(data.get("move"), dict):
             data = data["move"]
         move_id = data.get(
@@ -707,16 +716,54 @@ def extract_candidate_move(
                 "move_id",
                 data.get(
                     "candidateId",
-                    data.get("candidate", data.get("move")),
+                    data.get(
+                        "candidate",
+                        data.get(
+                            "move",
+                            data.get(
+                                "selectedMove",
+                                data.get(
+                                    "selected_move",
+                                    data.get(
+                                        "bestMove",
+                                        data.get(
+                                            "best_move",
+                                            data.get(
+                                                "choice",
+                                                data.get("selection"),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
                 ),
             ),
         )
+        if move_id is None:
+            # 兼容 {"result":"M12"}、{"position":"M12"} 等变体，
+            # 只接受带 M 前缀的字符串，避免把 row/col 数字误当编号。
+            for value in data.values():
+                if (
+                    isinstance(value, str)
+                    and re.fullmatch(
+                        r"\s*M\s*\d+\s*",
+                        value,
+                        flags=re.IGNORECASE,
+                    )
+                ):
+                    move_id = value
+                    break
     else:
         move_id = direct_move_id
 
     if move_id is not None:
-        match = re.fullmatch(r"M?(\d+)", str(move_id).strip(),
-                             flags=re.IGNORECASE)
+        match = re.fullmatch(
+            r"M?\s*(\d+)",
+            str(move_id).strip(),
+            flags=re.IGNORECASE,
+        )
         if not match:
             raise InvalidModelMove("模型返回的 moveId 格式无效")
         index = int(match.group(1))
@@ -734,14 +781,17 @@ def extract_candidate_move(
         return extract_move(content, board, size)
     except InvalidModelMove as error:
         preview = re.sub(r"\s+", " ", str(content)).strip()
-        preview = preview[:120] if preview else "<空响应>"
+        if len(preview) > 320:
+            preview = f"{preview[:120]} … [末尾] {preview[-180:]}"
+        elif not preview:
+            preview = "<空响应>"
         raise InvalidModelMove(
             f"未识别到合法 moveId；模型原始输出：{preview}"
         ) from error
 
 
 def extract_move(content: Any, board: list[list[int]], size: int) -> tuple[int, int]:
-    if isinstance(content, dict):
+    if isinstance(content, (dict, list)):
         data = content
     else:
         text = str(content).strip()
@@ -770,17 +820,69 @@ def extract_move(content: Any, board: list[list[int]], size: int) -> tuple[int, 
                     text,
                     flags=re.IGNORECASE | re.DOTALL,
                 )
-                if not coordinate_match:
-                    raise InvalidModelMove("模型没有返回 JSON 落点")
-                data = {
-                    "row": int(coordinate_match.group(1)),
-                    "col": int(coordinate_match.group(2)),
-                }
+                if coordinate_match:
+                    data = {
+                        "row": int(coordinate_match.group(1)),
+                        "col": int(coordinate_match.group(2)),
+                    }
+                else:
+                    # 某些 Flash 模型会无视 JSON 约束，先分析棋盘，最后用
+                    # “最终选择 (row,col)”或“行x列y”给出落点。优先解析
+                    # 带决策关键词的坐标，再退到全文最后一个合法坐标对。
+                    natural_pairs: list[tuple[int, int]] = []
+                    keyword_patterns = (
+                        (
+                            r"(?:最终(?:选择|落点)?|选择|落点|下在|落在|"
+                            r"推荐|决定)[^()\[\]\d]{0,24}"
+                            r"[\(\[]?\s*(\d{1,2})\s*[,，、]\s*"
+                            r"(\d{1,2})\s*[\)\]]?"
+                        ),
+                        (
+                            r"(?:row|行)\s*[:=：为]?\s*(\d{1,2})"
+                            r".{0,24}?(?:col(?:umn)?|列)"
+                            r"\s*[:=：为]?\s*(\d{1,2})"
+                        ),
+                    )
+                    for pattern in keyword_patterns:
+                        for match in re.finditer(
+                            pattern,
+                            text,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        ):
+                            natural_pairs.append(
+                                (int(match.group(1)), int(match.group(2)))
+                            )
 
-    if not isinstance(data, dict):
-        raise InvalidModelMove("模型返回的落点必须是 JSON 对象")
-    if isinstance(data.get("move"), dict):
-        data = data["move"]
+                    if not natural_pairs:
+                        natural_pairs.extend(
+                            (int(row_text), int(col_text))
+                            for row_text, col_text in re.findall(
+                                r"[\(\[]\s*(\d{1,2})\s*[,，、]\s*"
+                                r"(\d{1,2})\s*[\)\]]",
+                                text,
+                            )
+                        )
+
+                    selected_pair = next(
+                        (
+                            (row_value, col_value)
+                            for row_value, col_value in reversed(natural_pairs)
+                            if (
+                                0 <= row_value < size
+                                and 0 <= col_value < size
+                                and board[row_value][col_value] == 0
+                            )
+                        ),
+                        None,
+                    )
+                    if selected_pair is None:
+                        raise InvalidModelMove(
+                            "模型没有返回可识别的合法 JSON 或自然语言落点"
+                        )
+                    data = {
+                        "row": selected_pair[0],
+                        "col": selected_pair[1],
+                    }
 
     def coordinate(value: Any) -> int | None:
         if isinstance(value, bool):
@@ -793,8 +895,23 @@ def extract_move(content: Any, board: list[list[int]], size: int) -> tuple[int, 
             return int(value.strip())
         return None
 
-    row = coordinate(data.get("row"))
-    col = coordinate(data.get("col"))
+    if isinstance(data, list) and len(data) >= 2:
+        row = coordinate(data[0])
+        col = coordinate(data[1])
+    elif isinstance(data, dict):
+        for wrapper_key in ("result", "output", "data", "answer"):
+            if isinstance(data.get(wrapper_key), dict):
+                data = data[wrapper_key]
+                break
+        if isinstance(data.get("move"), dict):
+            data = data["move"]
+        row = coordinate(data.get("row", data.get("y")))
+        col = coordinate(
+            data.get("col", data.get("column", data.get("x")))
+        )
+    else:
+        raise InvalidModelMove("模型返回的落点必须是 JSON 对象或坐标数组")
+
     if row is None or col is None:
         raise InvalidModelMove("模型返回的 row/col 必须是整数")
     if not (0 <= row < size and 0 <= col < size):
@@ -821,9 +938,8 @@ def request_chat_content(
         request_data = {
             "model": model,
             "messages": messages,
-            "temperature": 0.1,
-            # 推理模型可能先生成 reasoning_content；必须等它生成完最终 JSON，
-            # 否则会在 moveId 出现前被截断并被误判为非法落点。
+            "temperature": 0,
+            # 普通快速模型只需输出一个 moveId，短额度可抑制无关长篇分析。
             "max_tokens": MODEL_MAX_TOKENS,
             "stream": False,
             "response_format": {"type": "json_object"},
@@ -954,6 +1070,7 @@ def call_upstream(
     candidate_ids = ", ".join(
         f"M{index}" for index in range(len(candidate_moves))
     )
+    first_candidate_id = "M0" if candidate_moves else ""
     messages = build_messages(
         payload,
         candidate_moves,
@@ -986,9 +1103,10 @@ def call_upstream(
                     "role": "user",
                     "content": (
                         f"上一回答无法作为落点使用：{error}。停止分析，"
-                        "不要解释，不要输出坐标。现在只返回一个 JSON 对象："
-                        '{"moveId":"M数字"}。'
-                        f"允许的编号只有：{candidate_ids}"
+                        "不要解释，不要输出坐标或占位词。现在只返回一个 "
+                        f'JSON 对象：{{"moveId":"{first_candidate_id}"}}。'
+                        f"{first_candidate_id} 是真实合法示例；也可以从以下编号"
+                        f"中逐字复制另一个：{candidate_ids}"
                     ),
                 },
             ]
@@ -1063,7 +1181,7 @@ def bearer_token(headers: Any) -> str:
 
 
 class GomokuHandler(BaseHTTPRequestHandler):
-    server_version = "GomokuAIAdapter/2.7"
+    server_version = f"GomokuAIAdapter/{ADAPTER_VERSION}"
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP handler API
         parsed = urlparse(self.path)
@@ -1075,6 +1193,9 @@ class GomokuHandler(BaseHTTPRequestHandler):
             {
                 "status": "ok",
                 "protocol": "gomoku-ai/v1",
+                "adapterVersion": ADAPTER_VERSION,
+                "promptMode": "full-board-json-moveId",
+                "modelMaxTokens": MODEL_MAX_TOKENS,
                 "modelMoveFormat": "moveId",
                 "modelTactics": "attack-defense-constrained",
                 "cloudDecisionModes": ["guarded", "raw"],
